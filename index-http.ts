@@ -37,7 +37,8 @@ app.get('/health', (req, res) => {
   res.json({ 
     status: 'ok', 
     service: 'gdrive-mcp-server',
-    hasToken: !!currentAccessToken 
+    hasToken: !!currentAccessToken,
+    message: currentAccessToken ? 'Ready to serve requests' : 'Waiting for access token'
   });
 });
 
@@ -239,6 +240,22 @@ async function ensureAuth(accessToken?: string) {
 async function startServer() {
   try {
     console.error("Starting Google Drive MCP server with HTTP transport");
+    
+    // Check if we have an initial access token (optional for HTTP server)
+    const initialToken = process.env.GOOGLE_DRIVE_ACCESS_TOKEN;
+    if (initialToken) {
+      console.error("Initial access token found, validating...");
+      const isValid = await validateAccessToken(initialToken);
+      if (isValid) {
+        currentAccessToken = initialToken;
+        setDynamicAccessToken(initialToken);
+        console.error("Initial access token validated successfully");
+      } else {
+        console.error("Initial access token validation failed, but server will start anyway");
+      }
+    } else {
+      console.error("No initial access token found - server will start and wait for dynamic token");
+    }
     
     // Start the Express server
     app.listen(PORT, () => {
