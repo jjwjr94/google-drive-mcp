@@ -33,6 +33,7 @@
     "dev": "npm run build && npm start",
     "dev:http": "npm run build && npm run start:http",
     "generate-token": "node scripts/generate-token.js",
+    "refresh-token": "node scripts/refresh-token.js",
     "test-auth": "npm run build && node scripts/test-auth.js"
   },
   "dependencies": {

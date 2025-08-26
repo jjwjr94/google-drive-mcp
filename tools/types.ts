@@ -42,3 +42,27 @@ export interface GSheetsReadInput {
   sheetId?: number; // Optional specific sheet ID
 }
 
+export interface GDriveCreateFileInput {
+  name: string;
+  mimeType: string;
+  content?: string;
+  parentFolderId?: string;
+}
+
+export interface GDriveCreateFolderInput {
+  name: string;
+  parentFolderId?: string;
+}
+
+export interface GDriveDeleteFileInput {
+  fileId: string;
+}
+
+export interface GDriveShareFileInput {
+  fileId: string;
+  emailAddress: string;
+  role: string;
+  type?: string;
+  sendNotificationEmail?: boolean;
+}
+

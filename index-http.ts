@@ -38,11 +38,11 @@ app.get('/health', (req, res) => {
     status: 'ok', 
     service: 'gdrive-mcp-server',
     hasToken: !!currentAccessToken,
-    message: currentAccessToken ? 'Ready to serve requests' : 'Waiting for access token'
+    type: 'HTTP Streamable MCP Server'
   });
 });
 
-// Set access token endpoint
+// Set access token endpoint (for initial setup)
 app.post('/set-token', async (req, res) => {
   try {
     const { accessToken } = req.body;
@@ -67,166 +67,152 @@ app.post('/set-token', async (req, res) => {
   }
 });
 
-// List available tools
-app.get('/tools', (req, res) => {
-  const toolList = tools.map(({ name, description, inputSchema }) => ({
-    name,
-    description,
-    inputSchema,
-  }));
-  
-  res.json({ tools: toolList });
-});
-
-// Google Drive Search
-app.post('/tools/gdrive_search', async (req, res) => {
+// HTTP Streamable MCP Endpoint - Main endpoint for all MCP operations
+app.post('/mcp', async (req, res) => {
   try {
-    if (!currentAccessToken) {
-      return res.status(401).json({ error: 'Access token not set. Use /set-token or x-access-token header.' });
-    }
-
-    await ensureAuth(currentAccessToken);
-    const tool = tools.find(t => t.name === 'gdrive_search');
+    const { jsonrpc, method, params, id } = req.body;
     
-    if (!tool) {
-      return res.status(404).json({ error: 'Tool not found' });
+    if (jsonrpc !== "2.0") {
+      return res.status(400).json({ 
+        jsonrpc: "2.0",
+        error: { code: -32600, message: 'Invalid Request' },
+        id: id 
+      });
     }
 
-    const result = await tool.handler(req.body);
-    res.json(result);
+    // Set up streaming response headers
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Transfer-Encoding', 'chunked');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+
+    // Handle different MCP methods
+    switch (method) {
+      case 'initialize':
+        // Send initialization response
+        const initResponse = {
+          jsonrpc: "2.0",
+          result: {
+            protocolVersion: "2025-06-18",
+            capabilities: {
+              tools: {},
+              resources: {}
+            },
+            serverInfo: {
+              name: "gdrive-mcp-server",
+              version: "1.0.0"
+            }
+          },
+          id: id
+        };
+        res.write(JSON.stringify(initResponse) + '\n');
+        break;
+
+      case 'tools/list':
+        // Send tools list
+        const toolsList = tools.map(({ name, description, inputSchema }) => ({
+          name,
+          description,
+          inputSchema,
+        }));
+        
+        const toolsResponse = {
+          jsonrpc: "2.0",
+          result: { tools: toolsList },
+          id: id
+        };
+        res.write(JSON.stringify(toolsResponse) + '\n');
+        break;
+
+      case 'tools/call':
+        // Check if we have an access token
+        if (!currentAccessToken) {
+          const errorResponse = {
+            jsonrpc: "2.0",
+            error: {
+              code: -32001,
+              message: 'Access token not set. Use /set-token endpoint or x-access-token header.'
+            },
+            id: id
+          };
+          res.write(JSON.stringify(errorResponse) + '\n');
+          break;
+        }
+
+        // Ensure authentication
+        await ensureAuth(currentAccessToken);
+        
+        const { name, arguments: toolArgs } = params;
+        const tool = tools.find(t => t.name === name);
+        
+        if (!tool) {
+          const errorResponse = {
+            jsonrpc: "2.0",
+            error: {
+              code: -32601,
+              message: `Tool '${name}' not found`
+            },
+            id: id
+          };
+          res.write(JSON.stringify(errorResponse) + '\n');
+          break;
+        }
+
+        // Send tool call start notification
+        const callStartResponse = {
+          jsonrpc: "2.0",
+          method: "tools/call",
+          params: {
+            name,
+            arguments: toolArgs,
+            callId: id
+          }
+        };
+        res.write(JSON.stringify(callStartResponse) + '\n');
+
+        // Execute tool
+        const result = await tool.handler(toolArgs);
+        
+        // Send tool result
+        const callResultResponse = {
+          jsonrpc: "2.0",
+          method: "tools/call",
+          params: {
+            callId: id,
+            content: result.content,
+            isError: result.isError
+          }
+        };
+        res.write(JSON.stringify(callResultResponse) + '\n');
+        break;
+
+      default:
+        const methodNotFoundResponse = {
+          jsonrpc: "2.0",
+          error: {
+            code: -32601,
+            message: `Method '${method}' not found`
+          },
+          id: id
+        };
+        res.write(JSON.stringify(methodNotFoundResponse) + '\n');
+    }
+
+    res.end();
+    
   } catch (error) {
-    console.error('Error in gdrive_search:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-// Google Drive Read File
-app.post('/tools/gdrive_read_file', async (req, res) => {
-  try {
-    if (!currentAccessToken) {
-      return res.status(401).json({ error: 'Access token not set. Use /set-token or x-access-token header.' });
-    }
-
-    await ensureAuth(currentAccessToken);
-    const tool = tools.find(t => t.name === 'gdrive_read_file');
-    
-    if (!tool) {
-      return res.status(404).json({ error: 'Tool not found' });
-    }
-
-    const result = await tool.handler(req.body);
-    res.json(result);
-  } catch (error) {
-    console.error('Error in gdrive_read_file:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-// Google Sheets Read
-app.post('/tools/gsheets_read', async (req, res) => {
-  try {
-    if (!currentAccessToken) {
-      return res.status(401).json({ error: 'Access token not set. Use /set-token or x-access-token header.' });
-    }
-
-    await ensureAuth(currentAccessToken);
-    const tool = tools.find(t => t.name === 'gsheets_read');
-    
-    if (!tool) {
-      return res.status(404).json({ error: 'Tool not found' });
-    }
-
-    const result = await tool.handler(req.body);
-    res.json(result);
-  } catch (error) {
-    console.error('Error in gsheets_read:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-// Google Sheets Update Cell
-app.post('/tools/gsheets_update_cell', async (req, res) => {
-  try {
-    if (!currentAccessToken) {
-      return res.status(401).json({ error: 'Access token not set. Use /set-token or x-access-token header.' });
-    }
-
-    await ensureAuth(currentAccessToken);
-    const tool = tools.find(t => t.name === 'gsheets_update_cell');
-    
-    if (!tool) {
-      return res.status(404).json({ error: 'Tool not found' });
-    }
-
-    const result = await tool.handler(req.body);
-    res.json(result);
-  } catch (error) {
-    console.error('Error in gsheets_update_cell:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-// List Google Drive files
-app.get('/files', async (req, res) => {
-  try {
-    if (!currentAccessToken) {
-      return res.status(401).json({ error: 'Access token not set. Use /set-token or x-access-token header.' });
-    }
-
-    await ensureAuth(currentAccessToken);
-    
-    const pageSize = parseInt(req.query.pageSize as string) || 10;
-    const pageToken = req.query.pageToken as string;
-    
-    const params: any = {
-      pageSize,
-      fields: "nextPageToken, files(id, name, mimeType)",
+    console.error('Error in MCP endpoint:', error);
+    const errorResponse = {
+      jsonrpc: "2.0",
+      error: {
+        code: -32603,
+        message: 'Internal server error',
+        data: (error as Error).message
+      },
+      id: req.body.id || "1"
     };
-
-    if (pageToken) {
-      params.pageToken = pageToken;
-    }
-
-    const driveResponse = await drive.files.list(params);
-    const files = driveResponse.data.files!;
-
-    res.json({
-      files: files.map((file) => ({
-        id: file.id,
-        name: file.name,
-        mimeType: file.mimeType,
-        uri: `gdrive:///${file.id}`,
-      })),
-      nextPageToken: driveResponse.data.nextPageToken,
-    });
-  } catch (error) {
-    console.error('Error listing files:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-// Read file content
-app.get('/files/:fileId/content', async (req, res) => {
-  try {
-    if (!currentAccessToken) {
-      return res.status(401).json({ error: 'Access token not set. Use /set-token or x-access-token header.' });
-    }
-
-    await ensureAuth(currentAccessToken);
-    const { fileId } = req.params;
-    
-    const tool = tools.find(t => t.name === 'gdrive_read_file');
-    if (!tool) {
-      return res.status(404).json({ error: 'Tool not found' });
-    }
-
-    // Create a proper input object for the tool
-    const toolInput = { fileId: fileId as string };
-    const result = await tool.handler(toolInput as any);
-    res.json(result);
-  } catch (error) {
-    console.error('Error reading file:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    res.write(JSON.stringify(errorResponse) + '\n');
+    res.end();
   }
 });
 
@@ -239,9 +225,9 @@ async function ensureAuth(accessToken?: string) {
 
 async function startServer() {
   try {
-    console.error("Starting Google Drive MCP server with HTTP transport");
+    console.error("Starting Google Drive HTTP Streamable MCP server");
     
-    // Check if we have an initial access token (optional for HTTP server)
+    // Check if we have an initial access token (optional for MCP server)
     const initialToken = process.env.GOOGLE_DRIVE_ACCESS_TOKEN;
     if (initialToken) {
       console.error("Initial access token found, validating...");
@@ -259,15 +245,25 @@ async function startServer() {
     
     // Start the Express server
     app.listen(PORT, () => {
-      console.error(`🚀 MCP Server running on http://localhost:${PORT}`);
+      console.error(`🚀 HTTP Streamable MCP Server running on http://localhost:${PORT}`);
       console.error(`📋 Health check: http://localhost:${PORT}/health`);
       console.error(`🔧 Set token: POST http://localhost:${PORT}/set-token`);
-      console.error(`📋 List tools: GET http://localhost:${PORT}/tools`);
-      console.error(`📁 List files: GET http://localhost:${PORT}/files`);
-      console.error(`📄 Read file: GET http://localhost:${PORT}/files/:fileId/content`);
-      console.error(`🔍 Search files: POST http://localhost:${PORT}/tools/gdrive_search`);
-      console.error(`📖 Read sheets: POST http://localhost:${PORT}/tools/gsheets_read`);
-      console.error(`✏️ Update sheets: POST http://localhost:${PORT}/tools/gsheets_update_cell`);
+      console.error(`🚀 MCP endpoint: POST http://localhost:${PORT}/mcp`);
+      console.error(``);
+      console.error(`📋 Available MCP methods:`);
+      console.error(`   - initialize: Initialize MCP connection`);
+      console.error(`   - tools/list: List available tools`);
+      console.error(`   - tools/call: Execute tools with streaming responses`);
+      console.error(``);
+      console.error(`🔧 Available tools (8 total):`);
+      console.error(`   - gdrive_search: Search for files`);
+      console.error(`   - gdrive_read_file: Read file contents`);
+      console.error(`   - gsheets_read: Read Google Sheets`);
+      console.error(`   - gsheets_update_cell: Update Google Sheets cells`);
+      console.error(`   - gdrive_create_file: Create new files`);
+      console.error(`   - gdrive_create_folder: Create new folders`);
+      console.error(`   - gdrive_delete_file: Delete files`);
+      console.error(`   - gdrive_share_file: Share files with permissions`);
     });
     
   } catch (error) {
