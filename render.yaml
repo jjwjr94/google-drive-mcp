@@ -3,7 +3,7 @@ services:
     name: gdrive-mcp-server
     env: node
     buildCommand: npm install && npm run build
-    startCommand: npm start
+    startCommand: npm run start:http
     envVars:
       - key: GOOGLE_DRIVE_ACCESS_TOKEN
         sync: false  # This will be set manually in Render dashboard
